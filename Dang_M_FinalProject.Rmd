@@ -1,0 +1,126 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+library("httr")
+# config file contains secret API key (left out of submission)
+source("./config.r")
+
+retrieveBeersByBrewer <- function(brewerId) {
+  # RateBeer API Key from config file
+  API_KEY <- ratebeer_API_KEY
+  # RateBeer API endpoint
+  url <- "https://api.r8.beer/v1/api/graphql/"
+  # GraphiQL query to send in API request
+  query <- paste("query { beersByBrewer(brewerId: ", brewerId, ", first: 1000)",
+                 "{ totalCount items { ",
+                 "name abv ibu calories averageRating ratingCount style { name } ",
+                 "brewer { name state { name } } }}}", sep = "")
+  headers = list("content-type" = "application/json", "Accept" = "application/json",
+                 "x-api-key" = API_KEY)
+  # makes the POST request with all of the necessary parameters
+  # requests have to contain a "Content-Type", "Accept", and "x-api-key" header
+  apiData <- POST(url, body = list(query = query, variables = "{}", operationName = NULL),
+                  encode = "json", add_headers("Content-Type" = "application/json",
+                                               "Accept" = "application/json",
+                                               "x-api-key" = API_KEY))
+  
+  print("Made a request.")
+  return(apiData)
+}
+
+#retrieveBeers(14952)
+```
+
+```{r}
+library("httr")
+library("jsonlite")
+
+parseBeers <- function(beerData) {
+  dataContent <- content(beerData, type = "text", encoding = "UTF-8")
+  parsedData <- fromJSON(dataContent, flatten = TRUE)
+  df <- parsedData$data$beersByBrewer$items
+  
+  return(df)
+}
+
+#parseBeers(retrieveBeersByBrewer(166))
+```
+
+```{r}
+library("rvest")
+
+parseStateBreweryIds <- function(stateUrl) {
+  page <- read_html(stateUrl) %>%
+    html_nodes("#brewerTable td a:nth-child(1)") %>%
+    html_attr("href")
+  # Regex to find the brewery Id number in a brewery link
+  # Example string: "/brewers/night-shift-brewing/14248/"
+  regex <- "(?<=\\/)([0-9]*)(?=\\/)"
+  # applies the Regex to find all of the brewery Id's in the vector of brewery links
+  ids <- regmatches(page, regexpr(regex, page, perl = TRUE))
+  
+  return(ids)
+}
+
+parseStateBreweryIds("https://www.ratebeer.com/breweries/massachusetts/21/213/")
+```
+
+```{r}
+library("purrr")
+
+retrieveBeersByState <- function() {
+  # a vector of all of the brewery Id's for the given state
+  ids <- parseStateBreweryIds("https://www.ratebeer.com/breweries/north%20dakota/34/213/")
+  beerDf <- ids %>% map(function(id) {
+    # RateBeer API requests are limited to 1 request per second
+    Sys.sleep(1)
+    retrieveBeersByBrewer(id)
+  }) %>% map_dfr(parseBeers)
+
+  return(beerDf)
+}
+```
+
+
+```{r}
+library("mongolite")
+
+createCsvBackup <- function(stateBeerData, stateName) {
+  filename <- paste("./", gsub(" ", "", stateName, fixed = TRUE), "_Beers.csv", sep = "")
+  write.csv(stateBeerData, filename)
+}
+
+addBeersToDatabase <- function(beerData) {
+  conn <- mongo(collection = "Beers", db = "DS4100")
+  conn$insert(beerData)
+  print(paste("Number of records:", conn$count()))
+  rm(conn)
+  gc()
+}
+
+beersState <- retrieveBeersByState()
+addBeersToDatabase(beersState)
+createCsvBackup(beersState, "North Dakota")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
