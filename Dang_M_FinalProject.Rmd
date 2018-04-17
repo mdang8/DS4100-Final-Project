@@ -34,8 +34,6 @@ retrieveBeersByBrewer <- function(brewerId) {
   print("Made a request.")
   return(apiData)
 }
-
-#retrieveBeers(14952)
 ```
 
 ```{r}
@@ -49,8 +47,6 @@ parseBeers <- function(beerData) {
   
   return(df)
 }
-
-#parseBeers(retrieveBeersByBrewer(166))
 ```
 
 ```{r}
@@ -60,10 +56,10 @@ parseStateBreweryIds <- function(stateUrl) {
   page <- read_html(stateUrl) %>%
     html_nodes("#brewerTable td a:nth-child(1)") %>%
     html_attr("href")
-  # Regex to find the brewery Id number in a brewery link
+  # Regex to find the brewery ID number in a brewery link
   # Example string: "/brewers/night-shift-brewing/14248/"
   regex <- "(?<=\\/)([0-9]*)(?=\\/)"
-  # applies the Regex to find all of the brewery Id's in the vector of brewery links
+  # applies the Regex to find all of the brewery ID's in the vector of brewery links
   ids <- regmatches(page, regexpr(regex, page, perl = TRUE))
   
   return(ids)
@@ -85,12 +81,12 @@ parseStateUrls <- function() {
     # selects the URL
     html_attr("href")
   
-  # extracts the state name and associated Id and stores them in a list
+  # extracts the state name, associated ID, and associated URL and stores them in a list
   stateIdList <- map(page, function(urlText) {
     # Regex to find the state name in the URL
     # Example string: "/breweries/massachusetts/21/213/"
     stateRegex <- "(?<=\\/breweries\\/)([a-z\\-]*)(?=\\/)"
-    # Regex to find the state Id in the URL
+    # Regex to find the state ID in the URL
     idRegex <- "(?<=\\/)([0-9]*)(?=\\/213\\/)"
     stateName <- regmatches(urlText, regexpr(stateRegex, urlText, perl = TRUE)) %>%
       # replaces the "-" for multi-word states
@@ -101,7 +97,8 @@ parseStateUrls <- function() {
     # special case for Washington DC where the toTitleCase() function doesn't completely work
     stateName <- ifelse(stateName == "Washington Dc", "Washington DC", stateName)
     
-    list("stateName" = stateName, "id" = id)
+    list("name" = stateName, "id" = id,
+         "url" = paste("https://www.ratebeer.com", urlText, sep = ""))
   })
   
   return(stateIdList)
@@ -113,9 +110,9 @@ parseStateUrls()
 ```{r}
 library("purrr")
 
-retrieveBeersByState <- function() {
-  # a vector of all of the brewery Id's for the given state
-  ids <- parseStateBreweryIds("https://www.ratebeer.com/breweries/north%20dakota/34/213/")
+retrieveBeersByState <- function(state) {
+  # a vector of all of the brewery ID's for the given state
+  ids <- parseStateBreweryIds(state$url)
   beerDf <- ids %>% map(function(id) {
     # RateBeer API requests are limited to 1 request per second
     Sys.sleep(1)
@@ -142,9 +139,27 @@ addBeersToDatabase <- function(beerData) {
   gc()
 }
 
-beersState <- retrieveBeersByState()
-addBeersToDatabase(beersState)
-createCsvBackup(beersState, "North Dakota")
+dataRetrieval <- function() {
+  # gets the list of states (contains the name, ID, and URL)
+  states <- parseStateUrls()
+  
+  # loops through each state and retrieves data for every beer from that state
+  for (i in 1:3) {
+    currentState <- states[[i]]
+    
+    # skip states that were already added during testing
+    if (currentState$name != "Hawaii" && currentState$name != "North Dakota") {
+      # all of the beers for the current state
+      beersForState <- retrieveBeersByState(currentState)
+      # adds all of the current state's beer data to the database
+      addBeersToDatabase(beersForState)
+      # creates a backup CSV file for the current state's beer data
+      createCsvBackup(beersForState, currentState$name)
+    }
+  }
+}
+
+dataRetrieval()
 ```
 
 
