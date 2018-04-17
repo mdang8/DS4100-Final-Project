@@ -73,6 +73,44 @@ parseStateBreweryIds("https://www.ratebeer.com/breweries/massachusetts/21/213/")
 ```
 
 ```{r}
+library("rvest")
+
+parseStateUrls <- function() {
+  # RateBeer URL for brewery locations by country
+  breweriesUrl <- "https://www.ratebeer.com/breweries/"
+  # finds all of the URL's for the 50 states and Washington DC
+  page <- read_html(breweriesUrl) %>%
+    # selects the first 51 URL's (50 states + Washington DC)
+    html_nodes("#default a:nth-of-type(-n+51)") %>%
+    # selects the URL
+    html_attr("href")
+  
+  # extracts the state name and associated Id and stores them in a list
+  stateIdList <- map(page, function(urlText) {
+    # Regex to find the state name in the URL
+    # Example string: "/breweries/massachusetts/21/213/"
+    stateRegex <- "(?<=\\/breweries\\/)([a-z\\-]*)(?=\\/)"
+    # Regex to find the state Id in the URL
+    idRegex <- "(?<=\\/)([0-9]*)(?=\\/213\\/)"
+    stateName <- regmatches(urlText, regexpr(stateRegex, urlText, perl = TRUE)) %>%
+      # replaces the "-" for multi-word states
+      gsub("-", " ", ., fixed = TRUE) %>%
+      # capitalizes the first letter of each word in a state's name
+      tools::toTitleCase()
+    id <- regmatches(urlText, regexpr(idRegex, urlText, perl = TRUE))
+    # special case for Washington DC where the toTitleCase() function doesn't completely work
+    stateName <- ifelse(stateName == "Washington Dc", "Washington DC", stateName)
+    
+    list("stateName" = stateName, "id" = id)
+  })
+  
+  return(stateIdList)
+}
+
+parseStateUrls()
+```
+
+```{r}
 library("purrr")
 
 retrieveBeersByState <- function() {
@@ -87,7 +125,6 @@ retrieveBeersByState <- function() {
   return(beerDf)
 }
 ```
-
 
 ```{r}
 library("mongolite")
