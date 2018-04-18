@@ -15,9 +15,11 @@ The RateBeer API contains five different queries to retrieve data:
  4. `beerSearch(query: String first: Int after: ID): BeerList`  
  5. `beersByBrewer(brewerId: ID! first: Int after: ID): BeerList`  
  
-To reduce the number of API requests made, as well as the time required to retrieve all of the 
-individual beer data, the `beersByBrewer` query is the best option. This query returns a list of all
-the beers by the specified brewer.  
+A big limitation I had was that RateBeer's API had a limit of 5,000 requests/month, so I had to try
+to optimize my data retrieval methods to get the most data with as few API requests as I could. To 
+reduce the number of API requests made, as well as the time required to retrieve all of the 
+individual beer data, the `beersByBrewer` query was the best option. This query returns a list of
+all the beers by the specified brewer.  
 
 Every API request is required to have a registered API key provided by RateBeer. This key is
 acquired by submitting an application with relevant information about how the RateBeer data will be
@@ -30,6 +32,15 @@ library("httr")
 source("./config.r")
 
 retrieveBeersByBrewer <- function(brewerId) {
+  # Makes an API request to retrieve data on all of the beers for the brewery with the given brewer 
+  # ID.
+  # 
+  # Args:
+  #   brewerId: the ID of the brewery
+  # 
+  # Returns:
+  #   A response from the API request
+  
   # RateBeer API Key from config file
   API_KEY <- ratebeer_API_KEY
   # RateBeer API endpoint
@@ -50,6 +61,7 @@ retrieveBeersByBrewer <- function(brewerId) {
   return(apiData)
 }
 ```
+
 
 Although, the `beersByBrewer` query greatly reduces the number of ID's to locate, there's
 still thousands of breweries that we need to identify to make all of the requests. One way to make
@@ -81,6 +93,15 @@ library("xml2")
 library("purrr")
 
 parseStateUrls <- function() {
+  # Scrapes the RateBeer webpage with all of the brewery locations to retrieve the URL's for each
+  # state.
+  # 
+  # Args:
+  # 
+  # Returns:
+  #   A list of list of state information. The state information consists of: the state name, the 
+  #   associated ID, and the associated URL.
+  
   # RateBeer URL for brewery locations by country
   breweriesUrl <- "https://www.ratebeer.com/breweries/"
   # finds all of the URL's for the 50 states and Washington DC
@@ -116,6 +137,7 @@ parseStateUrls <- function() {
 parseStateUrls()
 ```
 
+
 When we have the URL's for every state's brewery page, we will need to parse the pages for the 
 breweries. We can use a similiar strategy to parsing the state URL's since the pages have a 
 similiar structure. The difference is that the state breweries pages has a `table` element with each
@@ -123,6 +145,8 @@ brewery URL in a `td` cell, so we have to adjust our selector string. Another th
 cell contains two `a` tags; the first one for the brewery and the second one for the city it is
 located in. To make sure we're selecting the correct tag, we specify in the selector string to only
 get the first `a` tag in each cell.
+
+*__Note:__ After using this selector string for about half of the states, I realized that there were actually two `table` tags on the page both with the same `brewerTable` ID attribute...The second table was filled with cells for inactive breweries. I decided that I didn't want to include that data, so I changed the selector string to look for a `div` block with the `searchable` class, which is where the active breweries table is located. Since I didn't realize that before I started making all of the API requests, and having no easy way to identify inactive breweries, I decided to just keep all the ones already existing in the database. If I had more API calls to spare, I would've re-done the data retrieval to only get active breweries, but that wasn't an option at this point 🙁.*
 
 After applying the HTML parser, we get a vector of brewery URL's that we have to then parse for the 
 brewery ID's. The brewery name isn't important here because the API query only requires the ID.
@@ -133,8 +157,17 @@ between the forward slashes and return a vector containing all of the ID strings
 library("rvest")
 
 parseStateBreweryIds <- function(stateUrl) {
+  # Scrapes the RateBeer webpage of the given state URL to retrieve all of the brewery ID's for that
+  # state.
+  # 
+  # Args:
+  #   stateUrl: the URL for the state's RateBeer webpage
+  # 
+  # Returns:
+  #   A vector containing all of the brewery ID's for the state
+  
   page <- read_html(stateUrl) %>%
-    html_nodes("#brewerTable td a:nth-child(1)") %>%
+    html_nodes("div.searchable #brewerTable td a:nth-child(1)") %>%
     html_attr("href")
   # Regex to find the brewery ID number in a brewery link
   # Example string: "/brewers/night-shift-brewing/14248/"
@@ -148,14 +181,34 @@ parseStateBreweryIds <- function(stateUrl) {
 parseStateBreweryIds("https://www.ratebeer.com/breweries/massachusetts/21/213/")
 ```
 
+
+Now, with functions to find all of the state URL's and brewery ID's, we can make requests to 
+retrieve all of the beers for a state! The `retrieveBeersByState()` function takes in a list 
+containing information for an *individual* state. The `parseStateUrls()` function from above returns
+a list of lists with state information, so we can select any list element from it to use as the 
+argument.
+
+The `retrieveBeersByState()` function takes the state's URL and calls the `parseStateBreweryIds()`
+function to get a vector of all of the ID's for that state's breweries. It then calls the 
+`retrieveBeersByBrewer()` for each ID with a timeout of 1 second between each call. This timeout is
+required because the RateBeer API has a rate limit of 1 request/second. The `parseBeers()` function 
+is then applied to the results to extract the relevant data for the beers.
 ```{r}
 library("dplyr")
 library("httr")
 library("jsonlite")
 library("purrr")
 
-parseBeers <- function(beerData) {
-  dataContent <- content(beerData, type = "text", encoding = "UTF-8")
+parseBeers <- function(res) {
+  # Parses the beers from the request response.
+  # 
+  # Args:
+  #   res: the response from the API request
+  # 
+  # Returns:
+  #   The parsed beer data
+  
+  dataContent <- content(res, type = "text", encoding = "UTF-8")
   parsedData <- fromJSON(dataContent, flatten = TRUE)
   df <- parsedData$data$beersByBrewer$items
   
@@ -163,6 +216,15 @@ parseBeers <- function(beerData) {
 }
 
 retrieveBeersByState <- function(state) {
+  # Makes API requests for all of the breweries in the given state and returns a data frame 
+  # containing the data.
+  # 
+  # Args:
+  #   state: the list of state information
+  # 
+  # Returns:
+  #   A data frame containing the beer data for the given state
+  
   # a vector of all of the brewery ID's for the given state
   ids <- parseStateBreweryIds(state$url)
   beerDf <- ids %>% map(function(id) {
@@ -175,56 +237,89 @@ retrieveBeersByState <- function(state) {
 }
 ```
 
+
+Here we have functions for creating a CSV backup file for a state's beer data and adding data to the
+database. The `createCsvBackup()` function takes in beer data for a state and the state's name to 
+create a CSV file containing all of the data. This is for backup purposes in case something happens
+to the database or if there's an error when inserting records. A file will be created for each state
+and can be used to repopulate the database so to avoid making additional API requests.
+
+The `addBeersToDatabase()` function simply takes in a data frame containing beer data and inserts it
+into the database. MongoDB is used for the database.
+
+The `dataRetrieval()` function acts as a *"main"* function and calls the necessary functions to 
+retrieve all of the beer data, create the CSV backup files, and insert to the database. It gets the 
+list of state information using the `parseStateUrls()` function and loops through each state, 
+performing the previously mentioned operations to each of them.
 ```{r}
 library("mongolite")
+library("dplyr")
+library("xml2")
+library("httr")
+library("rvest")
+library("jsonlite")
+library("purrr")
 
 createCsvBackup <- function(stateBeerData, stateName) {
+  # Creates a CSV file containing the given state's beer data and names it using the given state 
+  # name.
+  # 
+  # Args:
+  #   stateBeerData: the data frame of beer data to write to the CSV file
+  #   stateName: the string state name used to create the file name
+  # 
+  # Returns:
+  # 
+  
   filename <- paste("./", gsub(" ", "", stateName, fixed = TRUE), "_Beers.csv", sep = "")
+  
   write.csv(stateBeerData, filename)
 }
 
 addBeersToDatabase <- function(beerData) {
+  # Adds the given beer data to the MongoDB database.
+  # 
+  # Args:
+  #   beerData: the data frame of beer data
+  # 
+  # Returns:
+  # 
+  
   conn <- mongo(collection = "Beers", db = "DS4100")
   conn$insert(beerData)
-  print(paste("Number of records:", conn$count()))
   rm(conn)
   gc()
 }
 
 dataRetrieval <- function() {
+  # Retrieves the beer data for each state, creates a CSV file containing the data, and adds it to
+  # the database.
+  # 
+  # Args:
+  # 
+  # Returns:
+  # 
+  
   # gets the list of states (contains the name, ID, and URL)
   states <- parseStateUrls()
   
   # loops through each state and retrieves data for every beer from that state
-  for (i in 1:3) {
+  for (i in 1:length(states)) {
     currentState <- states[[i]]
-    
-    # skip states that were already added during testing
-    if (currentState$name != "Hawaii" && currentState$name != "North Dakota") {
-      # all of the beers for the current state
-      beersForState <- retrieveBeersByState(currentState)
-      # adds all of the current state's beer data to the database
-      addBeersToDatabase(beersForState)
-      # creates a backup CSV file for the current state's beer data
-      createCsvBackup(beersForState, currentState$name)
-    }
+    print(paste("Current state:", currentState$name))
+    # all of the beers for the current state
+    beersForState <- retrieveBeersByState(currentState)
+    # creates a backup CSV file for the current state's beer data
+    createCsvBackup(beersForState, currentState$name)
+    # adds all of the current state's beer data to the database
+    addBeersToDatabase(beersForState)
   }
 }
 
+startTime <- Sys.time()
 dataRetrieval()
+endTime <- Sys.time()
+
+# prints the execution time for the dataRetrieval() function
+print(endTime - startTime)
 ```
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
